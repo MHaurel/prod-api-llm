@@ -8,7 +8,7 @@ Create an OpenRouter API key, then run:
 
 ```bash
 cp .env.example .env
-# Add your key to .env, then export it into the current shell.
+# Add your key to .env and adjust ANSWER_MAX_RETRIES if needed, then export it.
 set -a
 source .env
 set +a
@@ -33,6 +33,19 @@ The response has this shape:
   "model": "openai/gpt-5.6-luna"
 }
 ```
+
+Internally, the model is instructed to return this JSON format:
+
+```json
+{
+  "answer": "..."
+}
+```
+
+The API validates that format and retries generation according to
+`ANSWER_MAX_RETRIES` in `.env` (default: `2`, in addition to the initial attempt).
+After all attempts return invalid JSON, it returns HTTP 502.
+The format can be changed in the `GeneratedAnswer` model in `app/main.py`.
 
 Stream an answer with server-sent events (SSE):
 
