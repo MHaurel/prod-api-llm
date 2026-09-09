@@ -1,10 +1,12 @@
+import json
 import os
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, AsyncIterator
 
 from fastapi import Depends, FastAPI, HTTPException
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
+from starlette.responses import StreamingResponse
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 MODEL_NAME = "openai/gpt-5.6-luna"
@@ -54,3 +56,26 @@ async def answer(request: AnswerRequest, model: ModelDependency) -> AnswerRespon
 
     return AnswerResponse(answer=response.content, model=MODEL_NAME)
 
+
+async def stream_answer(prompt: str, model: ChatOpenAI) -> AsyncIterator[str]:
+    try:
+        async for chunk in model.astream(prompt):
+            if isinstance(chunk.content, str) and chunk.content:
+                data = json.dumps({"content": chunk.content})
+                yield f"event: token\ndata: {data}\n\n"
+    except Exception:
+        data = json.dumps({"message": "The model request failed"})
+        yield f"event: error\ndata: {data}\n\n"
+        return
+
+    data = json.dumps({"model": MODEL_NAME})
+    yield f"event: done\ndata: {data}\n\n"
+
+
+@app.post("/v1/answers/stream")
+async def answer_stream(request: AnswerRequest, model: ModelDependency) -> StreamingResponse:
+    return StreamingResponse(
+        stream_answer(request.prompt, model),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
