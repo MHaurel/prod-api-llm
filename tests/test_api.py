@@ -5,7 +5,7 @@ import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk
 
 import app.main as main
-from app.main import app, get_model
+from app.main import app, get_fallback_model, get_model
 
 
 class FakeModel:
@@ -21,6 +21,7 @@ class FakeModel:
 @pytest.fixture(autouse=True)
 def fake_model() -> Iterator[None]:
     app.dependency_overrides[get_model] = lambda: FakeModel()
+    app.dependency_overrides[get_fallback_model] = lambda: FakeModel()
     yield
     app.dependency_overrides.clear()
 
@@ -32,7 +33,7 @@ def test_answer() -> None:
     assert response.status_code == 200
     assert response.json() == {
         "answer": "Answer to: Hello",
-        "model": "openai/gpt-5.6-luna",
+        "model": main.PRIMARY_MODEL_NAME,
     }
 
 
@@ -44,24 +45,49 @@ def test_empty_prompt_is_rejected() -> None:
 
 
 def test_answer_retries_invalid_json() -> None:
-    class RetryModel:
+    class InvalidModel:
         attempts = 0
 
         async def ainvoke(self, messages: list[tuple[str, str]]) -> AIMessage:
             self.attempts += 1
-            if self.attempts == 1:
-                return AIMessage(content="not json")
+            return AIMessage(content="not json")
+
+    class FallbackModel:
+        attempts = 0
+
+        async def ainvoke(self, messages: list[tuple[str, str]]) -> AIMessage:
+            self.attempts += 1
             return AIMessage(content='{"answer": "Valid answer"}')
 
-    model = RetryModel()
-    app.dependency_overrides[get_model] = lambda: model
+    primary_model = InvalidModel()
+    fallback_model = FallbackModel()
+    app.dependency_overrides[get_model] = lambda: primary_model
+    app.dependency_overrides[get_fallback_model] = lambda: fallback_model
 
     with TestClient(app) as client:
         response = client.post("/v1/answers", json={"prompt": "Hello"})
 
     assert response.status_code == 200
-    assert response.json()["answer"] == "Valid answer"
-    assert model.attempts == 2
+    assert response.json() == {
+        "answer": "Valid answer",
+        "model": main.FALLBACK_MODEL_NAME,
+    }
+    assert primary_model.attempts == 1
+    assert fallback_model.attempts == 1
+
+
+def test_answer_uses_fallback_after_primary_request_fails() -> None:
+    class FailingModel:
+        async def ainvoke(self, messages: list[tuple[str, str]]) -> AIMessage:
+            raise RuntimeError("Model unavailable")
+
+    app.dependency_overrides[get_model] = lambda: FailingModel()
+
+    with TestClient(app) as client:
+        response = client.post("/v1/answers", json={"prompt": "Hello"})
+
+    assert response.status_code == 200
+    assert response.json()["model"] == main.FALLBACK_MODEL_NAME
 
 
 def test_answer_fails_after_configured_retries(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -75,13 +101,14 @@ def test_answer_fails_after_configured_retries(monkeypatch: pytest.MonkeyPatch) 
     model = InvalidModel()
     monkeypatch.setattr(main, "ANSWER_MAX_RETRIES", 1)
     app.dependency_overrides[get_model] = lambda: model
+    app.dependency_overrides[get_fallback_model] = lambda: model
 
     with TestClient(app) as client:
         response = client.post("/v1/answers", json={"prompt": "Hello"})
 
     assert response.status_code == 502
     assert response.json() == {
-        "detail": "The model did not return valid JSON after 2 attempts"
+        "detail": "The models did not return valid JSON after 2 attempts"
     }
     assert model.attempts == 2
 
@@ -95,5 +122,5 @@ def test_stream_answer() -> None:
     assert response.text == (
         'event: token\ndata: {"content": "Answer "}\n\n'
         'event: token\ndata: {"content": "to: Hello"}\n\n'
-        'event: done\ndata: {"model": "openai/gpt-5.6-luna"}\n\n'
+        f'event: done\ndata: {{"model": "{main.PRIMARY_MODEL_NAME}"}}\n\n'
     )

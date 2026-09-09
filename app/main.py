@@ -9,7 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.responses import StreamingResponse
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-MODEL_NAME = "openai/gpt-5.6-luna"
+PRIMARY_MODEL_NAME = os.getenv("PRIMARY_MODEL_NAME", "openai/gpt-5.6-luna")
+FALLBACK_MODEL_NAME = os.getenv("FALLBACK_MODEL_NAME", "openai/gpt-5.6-sol")
 ANSWER_MAX_RETRIES = int(os.getenv("ANSWER_MAX_RETRIES", "2"))
 
 if ANSWER_MAX_RETRIES < 0:
@@ -38,18 +39,28 @@ Do not wrap the JSON in Markdown code fences or include any other text."""
 
 @lru_cache
 def get_model() -> ChatOpenAI:
+    return create_model(PRIMARY_MODEL_NAME)
+
+
+@lru_cache
+def get_fallback_model() -> ChatOpenAI:
+    return create_model(FALLBACK_MODEL_NAME)
+
+
+def create_model(model_name: str) -> ChatOpenAI:
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set")
 
     return ChatOpenAI(
-        model=MODEL_NAME,
+        model=model_name,
         api_key=api_key,
         base_url=OPENROUTER_BASE_URL,
     )
 
 
 ModelDependency = Annotated[ChatOpenAI, Depends(get_model)]
+FallbackModelDependency = Annotated[ChatOpenAI, Depends(get_fallback_model)]
 
 app = FastAPI(title="Production LLM API", version="0.1.0")
 
@@ -60,7 +71,11 @@ async def health() -> dict[str, str]:
 
 
 @app.post("/v1/answers", response_model=AnswerResponse)
-async def answer(request: AnswerRequest, model: ModelDependency) -> AnswerResponse:
+async def answer(
+    request: AnswerRequest,
+    model: ModelDependency,
+    fallback_model: FallbackModelDependency,
+) -> AnswerResponse:
     max_attempts = ANSWER_MAX_RETRIES + 1
     messages = [
         ("system", ANSWER_FORMAT_PROMPT),
@@ -68,15 +83,21 @@ async def answer(request: AnswerRequest, model: ModelDependency) -> AnswerRespon
     ]
 
     for attempt in range(max_attempts):
-        try:
-            response = await model.ainvoke(messages)
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail="The model request failed") from exc
+        current_model = model if attempt == 0 else fallback_model
+        current_model_name = PRIMARY_MODEL_NAME if attempt == 0 else FALLBACK_MODEL_NAME
 
-        if isinstance(response.content, str):
+        try:
+            response = await current_model.ainvoke(messages)
+        except Exception:
+            response = None
+
+        if response is not None and isinstance(response.content, str):
             try:
                 generated_answer = GeneratedAnswer.model_validate_json(response.content)
-                return AnswerResponse(answer=generated_answer.answer, model=MODEL_NAME)
+                return AnswerResponse(
+                    answer=generated_answer.answer,
+                    model=current_model_name,
+                )
             except ValidationError:
                 pass
 
@@ -84,14 +105,14 @@ async def answer(request: AnswerRequest, model: ModelDependency) -> AnswerRespon
             messages.append(
                 (
                     "human",
-                    "Your previous response did not match the required JSON schema. "
+                    "The previous generation attempt was unsuccessful. "
                     "Try again and return only the JSON object.",
                 )
             )
 
     raise HTTPException(
         status_code=502,
-        detail=f"The model did not return valid JSON after {max_attempts} attempts",
+        detail=f"The models did not return valid JSON after {max_attempts} attempts",
     )
 
 
@@ -106,7 +127,7 @@ async def stream_answer(prompt: str, model: ChatOpenAI) -> AsyncIterator[str]:
         yield f"event: error\ndata: {data}\n\n"
         return
 
-    data = json.dumps({"model": MODEL_NAME})
+    data = json.dumps({"model": PRIMARY_MODEL_NAME})
     yield f"event: done\ndata: {data}\n\n"
 
 

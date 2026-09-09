@@ -1,6 +1,6 @@
 # Production LLM API
 
-A small FastAPI service that sends prompts to GPT-5.6 Luna through OpenRouter using LangChain.
+A small FastAPI service that sends prompts to configurable OpenRouter models using LangChain.
 
 ## Run locally
 
@@ -8,7 +8,7 @@ Create an OpenRouter API key, then run:
 
 ```bash
 cp .env.example .env
-# Add your key to .env and adjust ANSWER_MAX_RETRIES if needed, then export it.
+# Add your key to .env and adjust the model or retry settings if needed, then export it.
 set -a
 source .env
 set +a
@@ -44,7 +44,9 @@ Internally, the model is instructed to return this JSON format:
 
 The API validates that format and retries generation according to
 `ANSWER_MAX_RETRIES` in `.env` (default: `2`, in addition to the initial attempt).
-After all attempts return invalid JSON, it returns HTTP 502.
+The first attempt uses `PRIMARY_MODEL_NAME`; retries use `FALLBACK_MODEL_NAME`.
+Failures include both model request errors and responses that do not match the JSON
+format. After all attempts fail, the API returns HTTP 502.
 The format can be changed in the `GeneratedAnswer` model in `app/main.py`.
 
 Stream an answer with server-sent events (SSE):
@@ -67,6 +69,9 @@ data: {"content": " is blue..."}
 event: done
 data: {"model": "openai/gpt-5.6-luna"}
 ```
+
+Streaming uses the primary model only and does not retry because its tokens are sent
+to the client immediately.
 
 To see the answer appear token by token in your terminal, run:
 
