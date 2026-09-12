@@ -9,7 +9,7 @@ def main() -> None:
     parser.add_argument("prompt", help="Prompt to send to the model")
     parser.add_argument(
         "--url",
-        default="http://127.0.0.1:8000/v1/answers/stream",
+        default="http://127.0.0.1:8000/answers/stream",
         help="Streaming endpoint URL",
     )
     args = parser.parse_args()

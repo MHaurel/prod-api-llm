@@ -104,7 +104,7 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/v1/answers", response_model=AnswerResponse)
+@app.post("/answers", response_model=AnswerResponse)
 async def answer(
     request: AnswerRequest,
     model: ModelDependency,
@@ -178,7 +178,7 @@ async def stream_answer(prompt: str, model: ChatOpenAI) -> AsyncIterator[str]:
     yield f"event: done\ndata: {data}\n\n"
 
 
-@app.post("/v1/answers/stream")
+@app.post("/answers/stream")
 async def answer_stream(request: AnswerRequest, model: ModelDependency) -> StreamingResponse:
     return StreamingResponse(
         stream_answer(request.prompt, model),

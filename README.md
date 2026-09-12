@@ -20,7 +20,7 @@ uv run uvicorn app.main:app --reload
 Send a prompt:
 
 ```bash
-curl http://127.0.0.1:8000/v1/answers \
+curl http://127.0.0.1:8000/answers \
   --header 'Content-Type: application/json' \
   --data '{"prompt":"Why is the sky blue?"}'
 ```
@@ -71,7 +71,7 @@ The streaming endpoint is not cached because it has a different output contract.
 Stream an answer with server-sent events (SSE):
 
 ```bash
-curl --no-buffer http://127.0.0.1:8000/v1/answers/stream \
+curl --no-buffer http://127.0.0.1:8000/answers/stream \
   --header 'Content-Type: application/json' \
   --data '{"prompt":"Why is the sky blue?"}'
 ```

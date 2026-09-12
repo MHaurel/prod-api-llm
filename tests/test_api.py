@@ -31,7 +31,7 @@ def fake_model() -> Iterator[None]:
 
 def test_answer() -> None:
     with TestClient(app) as client:
-        response = client.post("/v1/answers", json={"prompt": "Hello"})
+        response = client.post("/answers", json={"prompt": "Hello"})
 
     assert response.status_code == 200
     assert response.json() == {
@@ -53,10 +53,10 @@ def test_answer_reuses_cached_answer_for_similar_prompt() -> None:
 
     with TestClient(app) as client:
         first_response = client.post(
-            "/v1/answers", json={"prompt": "How do I reset my password?"}
+            "/answers", json={"prompt": "How do I reset my password?"}
         )
         cached_response = client.post(
-            "/v1/answers", json={"prompt": "How can I reset my password?"}
+            "/answers", json={"prompt": "How can I reset my password?"}
         )
 
     assert first_response.status_code == 200
@@ -75,7 +75,7 @@ def test_cache_entries_are_isolated_by_model() -> None:
 
 def test_empty_prompt_is_rejected() -> None:
     with TestClient(app) as client:
-        response = client.post("/v1/answers", json={"prompt": ""})
+        response = client.post("/answers", json={"prompt": ""})
 
     assert response.status_code == 422
 
@@ -101,7 +101,7 @@ def test_answer_retries_invalid_json() -> None:
     app.dependency_overrides[get_fallback_model] = lambda: fallback_model
 
     with TestClient(app) as client:
-        response = client.post("/v1/answers", json={"prompt": "Hello"})
+        response = client.post("/answers", json={"prompt": "Hello"})
 
     assert response.status_code == 200
     assert response.json() == {
@@ -120,7 +120,7 @@ def test_answer_uses_fallback_after_primary_request_fails() -> None:
     app.dependency_overrides[get_model] = lambda: FailingModel()
 
     with TestClient(app) as client:
-        response = client.post("/v1/answers", json={"prompt": "Hello"})
+        response = client.post("/answers", json={"prompt": "Hello"})
 
     assert response.status_code == 200
     assert response.json()["model"] == main.FALLBACK_MODEL_NAME
@@ -140,7 +140,7 @@ def test_answer_fails_after_configured_retries(monkeypatch: pytest.MonkeyPatch) 
     app.dependency_overrides[get_fallback_model] = lambda: model
 
     with TestClient(app) as client:
-        response = client.post("/v1/answers", json={"prompt": "Hello"})
+        response = client.post("/answers", json={"prompt": "Hello"})
 
     assert response.status_code == 502
     assert response.json() == {
@@ -151,7 +151,7 @@ def test_answer_fails_after_configured_retries(monkeypatch: pytest.MonkeyPatch) 
 
 def test_stream_answer() -> None:
     with TestClient(app) as client:
-        response = client.post("/v1/answers/stream", json={"prompt": "Hello"})
+        response = client.post("/answers/stream", json={"prompt": "Hello"})
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
