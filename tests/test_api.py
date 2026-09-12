@@ -5,7 +5,8 @@ import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk
 
 import app.main as main
-from app.main import app, get_fallback_model, get_model
+from app.cache import InMemoryAnswerCache
+from app.main import app, get_answer_cache, get_fallback_model, get_model
 
 
 class FakeModel:
@@ -22,6 +23,8 @@ class FakeModel:
 def fake_model() -> Iterator[None]:
     app.dependency_overrides[get_model] = lambda: FakeModel()
     app.dependency_overrides[get_fallback_model] = lambda: FakeModel()
+    cache = InMemoryAnswerCache()
+    app.dependency_overrides[get_answer_cache] = lambda: cache
     yield
     app.dependency_overrides.clear()
 
@@ -35,6 +38,39 @@ def test_answer() -> None:
         "answer": "Answer to: Hello",
         "model": main.PRIMARY_MODEL_NAME,
     }
+
+
+def test_answer_reuses_cached_answer_for_similar_prompt() -> None:
+    class CountingModel(FakeModel):
+        attempts = 0
+
+        async def ainvoke(self, messages: list[tuple[str, str]]) -> AIMessage:
+            self.attempts += 1
+            return await super().ainvoke(messages)
+
+    model = CountingModel()
+    app.dependency_overrides[get_model] = lambda: model
+
+    with TestClient(app) as client:
+        first_response = client.post(
+            "/v1/answers", json={"prompt": "How do I reset my password?"}
+        )
+        cached_response = client.post(
+            "/v1/answers", json={"prompt": "How can I reset my password?"}
+        )
+
+    assert first_response.status_code == 200
+    assert cached_response.status_code == 200
+    assert cached_response.json() == first_response.json()
+    assert model.attempts == 1
+
+
+def test_cache_entries_are_isolated_by_model() -> None:
+    cache = InMemoryAnswerCache()
+    cache.put("Hello", "Primary answer", "primary-model")
+
+    assert cache.get("Hello!", "primary-model") == "Primary answer"
+    assert cache.get("Hello!", "other-model") is None
 
 
 def test_empty_prompt_is_rejected() -> None:

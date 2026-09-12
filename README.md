@@ -49,6 +49,25 @@ Failures include both model request errors and responses that do not match the J
 format. After all attempts fail, the API returns HTTP 502.
 The format can be changed in the `GeneratedAnswer` model in `app/main.py`.
 
+Successful JSON answers can use one of three model-specific cache strategies. Select
+one with `CACHE_STRATEGY`:
+
+- `memory`: fuzzy prompt matching in process memory; cleared when the process stops.
+- `disk` (default): the same fuzzy matching persisted in a local SQLite database.
+- `semantic`: cosine similarity over local sentence-transformer embeddings, stored
+  in process memory. The embedding model is downloaded the first time it is used.
+
+The fuzzy strategies are case-insensitive and ignore punctuation and repeated
+whitespace. Additional settings are:
+
+- `CACHE_DB_PATH` (default: `.cache/answers.sqlite3`; used by `disk`)
+- `CACHE_SIMILARITY_THRESHOLD` (default: `0.9`; used by `memory` and `disk`)
+- `CACHE_SEMANTIC_SIMILARITY_THRESHOLD` (default: `0.8`)
+- `CACHE_MAX_ENTRIES` (default: `1000`; least-recently-used entries are removed first)
+- `EMBEDDING_MODEL_NAME` (default: `sentence-transformers/all-MiniLM-L6-v2`)
+
+The streaming endpoint is not cached because it has a different output contract.
+
 Stream an answer with server-sent events (SSE):
 
 ```bash

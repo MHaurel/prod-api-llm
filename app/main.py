@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from functools import lru_cache
@@ -8,13 +9,33 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.responses import StreamingResponse
 
+from app.cache import AnswerCache, create_answer_cache
+
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 PRIMARY_MODEL_NAME = os.getenv("PRIMARY_MODEL_NAME", "openai/gpt-5.6-luna")
 FALLBACK_MODEL_NAME = os.getenv("FALLBACK_MODEL_NAME", "openai/gpt-5.6-sol")
 ANSWER_MAX_RETRIES = int(os.getenv("ANSWER_MAX_RETRIES", "2"))
+CACHE_DB_PATH = os.getenv("CACHE_DB_PATH", ".cache/answers.sqlite3")
+CACHE_STRATEGY = os.getenv("CACHE_STRATEGY", "disk").lower()
+CACHE_SIMILARITY_THRESHOLD = float(os.getenv("CACHE_SIMILARITY_THRESHOLD", "0.9"))
+CACHE_SEMANTIC_SIMILARITY_THRESHOLD = float(
+    os.getenv("CACHE_SEMANTIC_SIMILARITY_THRESHOLD", "0.8")
+)
+CACHE_MAX_ENTRIES = int(os.getenv("CACHE_MAX_ENTRIES", "1000"))
+EMBEDDING_MODEL_NAME = os.getenv(
+    "EMBEDDING_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2"
+)
 
 if ANSWER_MAX_RETRIES < 0:
     raise ValueError("ANSWER_MAX_RETRIES must be zero or greater")
+if CACHE_STRATEGY not in {"memory", "disk", "semantic"}:
+    raise ValueError("CACHE_STRATEGY must be one of: memory, disk, semantic")
+if not 0 <= CACHE_SIMILARITY_THRESHOLD <= 1:
+    raise ValueError("CACHE_SIMILARITY_THRESHOLD must be between 0 and 1")
+if not 0 <= CACHE_SEMANTIC_SIMILARITY_THRESHOLD <= 1:
+    raise ValueError("CACHE_SEMANTIC_SIMILARITY_THRESHOLD must be between 0 and 1")
+if CACHE_MAX_ENTRIES < 1:
+    raise ValueError("CACHE_MAX_ENTRIES must be at least 1")
 
 
 class AnswerRequest(BaseModel):
@@ -47,6 +68,18 @@ def get_fallback_model() -> ChatOpenAI:
     return create_model(FALLBACK_MODEL_NAME)
 
 
+@lru_cache
+def get_answer_cache() -> AnswerCache:
+    return create_answer_cache(
+        CACHE_STRATEGY,
+        path=CACHE_DB_PATH,
+        similarity_threshold=CACHE_SIMILARITY_THRESHOLD,
+        semantic_similarity_threshold=CACHE_SEMANTIC_SIMILARITY_THRESHOLD,
+        max_entries=CACHE_MAX_ENTRIES,
+        embedding_model_name=EMBEDDING_MODEL_NAME,
+    )
+
+
 def create_model(model_name: str) -> ChatOpenAI:
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
@@ -61,6 +94,7 @@ def create_model(model_name: str) -> ChatOpenAI:
 
 ModelDependency = Annotated[ChatOpenAI, Depends(get_model)]
 FallbackModelDependency = Annotated[ChatOpenAI, Depends(get_fallback_model)]
+AnswerCacheDependency = Annotated[AnswerCache, Depends(get_answer_cache)]
 
 app = FastAPI(title="Production LLM API", version="0.1.0")
 
@@ -75,6 +109,7 @@ async def answer(
     request: AnswerRequest,
     model: ModelDependency,
     fallback_model: FallbackModelDependency,
+    cache: AnswerCacheDependency,
 ) -> AnswerResponse:
     max_attempts = ANSWER_MAX_RETRIES + 1
     messages = [
@@ -86,6 +121,12 @@ async def answer(
         current_model = model if attempt == 0 else fallback_model
         current_model_name = PRIMARY_MODEL_NAME if attempt == 0 else FALLBACK_MODEL_NAME
 
+        cached_answer = await asyncio.to_thread(
+            cache.get, request.prompt, current_model_name
+        )
+        if cached_answer is not None:
+            return AnswerResponse(answer=cached_answer, model=current_model_name)
+
         try:
             response = await current_model.ainvoke(messages)
         except Exception:
@@ -94,6 +135,12 @@ async def answer(
         if response is not None and isinstance(response.content, str):
             try:
                 generated_answer = GeneratedAnswer.model_validate_json(response.content)
+                await asyncio.to_thread(
+                    cache.put,
+                    request.prompt,
+                    generated_answer.answer,
+                    current_model_name,
+                )
                 return AnswerResponse(
                     answer=generated_answer.answer,
                     model=current_model_name,
